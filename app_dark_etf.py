@@ -947,7 +947,7 @@ html,body,[data-testid="stAppViewContainer"],[data-testid="stMain"],[data-testid
     tab1, tab2 = st.tabs(["📊  Tables", "🔵  Scatter — Price vs Volume"])
 
     with tab1:
-      st.markdown('<div class="sec-hdr">Sector Leaders</div>', unsafe_allow_html=True)
+      st.markdown('<div class="sec-hdr">RS Radar — Sector Leaders</div>', unsafe_allow_html=True)
       cl, cr = st.columns([1, 3], gap="medium")
 
       with cl:
@@ -973,17 +973,10 @@ html,body,[data-testid="stAppViewContainer"],[data-testid="stMain"],[data-testid
       ir.sort(key=lambda x: x[2].get("raw_rs", 0), reverse=True)
       render_table(ir, extra=True, height=650, t=t)
 
-    render_scatter(rs_all, scatter_data, all_tickers)
-
-      st.markdown("""
----
- **Disclaimer:** MarketRotation Pro is intended for educational and informational 
-purposes only. Nothing displayed constitutes financial advice, investment recommendations, 
-or an offer to buy or sell any security. Past performance is not indicative of future 
-results. Always consult a licensed financial advisor before making any investment decisions.
-""")
-
-      
+      st.markdown(
+          f'<div style="font-size:9px;color:#1e293b;text-align:right;margin-top:12px">Yahoo Finance · {now_str}</div>',
+          unsafe_allow_html=True
+      )
 
     with tab2:
       st.markdown('<div class="sec-hdr">ETF Scatter — Price Change vs Run Rate</div>', unsafe_allow_html=True)
@@ -992,6 +985,19 @@ results. Always consult a licensed financial advisor before making any investmen
       with st.spinner("Loading scatter data..."):
           scatter_data = fetch_scatter_data(all_tickers)
       render_scatter(rs_all, scatter_data, all_tickers)
+
+    st.markdown(
+        '<div style="margin-top:32px;padding:14px 18px;border-radius:8px;'
+        'background:rgba(239,68,68,0.07);border:1px solid rgba(239,68,68,0.18);'
+        'font-size:11px;color:#94a3b8;line-height:1.7">'
+        '⚠️ <b style="color:#f87171">Disclaimer:</b> '
+        'MarketRotation Pro is intended for educational and informational purposes only. '
+        'Nothing displayed in this application constitutes financial advice, investment recommendations, '
+        'or an offer to buy or sell any security. Past performance is not indicative of future results. '
+        'Always consult a licensed financial advisor before making any investment decisions. Use at your own risk.'
+        '</div>',
+        unsafe_allow_html=True
+    )
 
 
 if __name__ == "__main__":
