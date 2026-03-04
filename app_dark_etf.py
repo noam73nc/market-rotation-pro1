@@ -375,6 +375,21 @@ SECTOR_LEADERS = [
     ("RSPT","Technology"), ("RSPF","Financials"),
 ]
 
+# 11 S&P 500 SPDR Sector ETFs
+XL_SECTORS = [
+    ("XLK",  "Technology"),
+    ("XLC",  "Comm Services"),
+    ("XLY",  "Cons Discretionary"),
+    ("XLF",  "Financials"),
+    ("XLI",  "Industrials"),
+    ("XLU",  "Utilities"),
+    ("XLV",  "Health Care"),
+    ("XLRE", "Real Estate"),
+    ("XLE",  "Energy"),
+    ("XLP",  "Cons Staples"),
+    ("XLB",  "Materials"),
+]
+
 BENCHMARK = "SPY"
 
 FACTORS = [
@@ -1197,7 +1212,7 @@ def main():
     st.markdown(
         f'<div class="page-header">'
         f'  <div class="page-title">MarketRotation Pro</div>'
-        f'  <div class="page-sub">Sector &amp; Theme Rotation Tracker &middot; Built with Python &amp; Claude AI &middot; By Noam73 &reg; &copy;</div>'
+        f'  <div class="page-sub">Sector &amp; Theme Rotation Tracker &middot; Built with Python &amp; Claude AI By Noam73©</div>'
         f'  <div class="page-date">{date_str}</div>'
         f'</div>',
         unsafe_allow_html=True
@@ -1265,7 +1280,7 @@ html,body,[data-testid="stAppViewContainer"],[data-testid="stMain"],[data-testid
     render_market_cards(card_data)
 
     # Fetch ETF prices & compute RS
-    all_t = list({t[0] for t in INDUSTRY_LEADERS} | {t[0] for t in SECTOR_LEADERS})
+    all_t = list({t[0] for t in INDUSTRY_LEADERS} | {t[0] for t in SECTOR_LEADERS} | {t[0] for t in XL_SECTORS})
     with st.spinner("Fetching ETF data..."):
         prices = fetch_prices(all_t)
     if prices.empty:
@@ -1277,6 +1292,7 @@ html,body,[data-testid="stAppViewContainer"],[data-testid="stMain"],[data-testid
 
     name_map = {t[0]: t[1] for t in INDUSTRY_LEADERS}
     name_map.update({t[0]: t[1] for t in SECTOR_LEADERS})
+    name_map.update({t[0]: t[1] for t in XL_SECTORS})
     for tkr, d in rs_all.items():
         d["name"] = name_map.get(tkr, tkr)
 
@@ -1309,6 +1325,12 @@ html,body,[data-testid="stAppViewContainer"],[data-testid="stMain"],[data-testid
         sr = [(tkr, name, rs_all[tkr]) for tkr, name in SECTOR_LEADERS if tkr in rs_all]
         sr.sort(key=lambda x: x[2].get("raw_rs", 0), reverse=True)
         render_table(sr, extra=False, height=385, t=t)
+
+      # XL Sectors — 11 S&P 500 SPDR Sectors
+      st.markdown('<div class="sec-hdr">S&amp;P 500 Sectors (SPDR)</div>', unsafe_allow_html=True)
+      xl = [(tkr, name, rs_all[tkr]) for tkr, name in XL_SECTORS if tkr in rs_all]
+      xl.sort(key=lambda x: x[2].get("raw_rs", 0), reverse=True)
+      render_table(xl, extra=False, height=420, t=t)
 
       # Industry Leaders
       st.markdown('<div class="sec-hdr">Industry Leaders</div>', unsafe_allow_html=True)
