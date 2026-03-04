@@ -947,7 +947,7 @@ html,body,[data-testid="stAppViewContainer"],[data-testid="stMain"],[data-testid
     tab1, tab2 = st.tabs(["📊  Tables", "🔵  Scatter — Price vs Volume"])
 
     with tab1:
-      st.markdown('<div class="sec-hdr">RS Radar — Sector Leaders</div>', unsafe_allow_html=True)
+      st.markdown('<div class="sec-hdr">Sector Leaders</div>', unsafe_allow_html=True)
       cl, cr = st.columns([1, 3], gap="medium")
 
       with cl:
