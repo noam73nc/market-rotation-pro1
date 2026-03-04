@@ -860,7 +860,7 @@ def main():
     st.markdown(
         f'<div class="page-header">'
         f'  <div class="page-title">MarketRotation Pro</div>'
-        f'  <div class="page-sub">Sector &amp; Theme Rotation Tracker &middot; Built with Python &amp; Claude AI</div>'
+        f'  <div class="page-sub">Sector &amp; Theme Rotation Tracker &middot; Built with Python &amp; Claude AI By Noam73nc</div>'
         f'  <div class="page-date">{date_str}</div>'
         f'</div>',
         unsafe_allow_html=True
@@ -975,7 +975,11 @@ html,body,[data-testid="stAppViewContainer"],[data-testid="stMain"],[data-testid
 
       st.markdown(
           f'<div style="font-size:9px;color:#1e293b;text-align:right;margin-top:12px">Yahoo Finance · {now_str}</div>',
-          unsafe_allow_html=True
+          unsafe_allow_html=True ⚠️ **Disclaimer:** MarketRotation Pro is intended for educational and informational 
+purposes only. Nothing displayed constitutes financial advice, investment recommendations, 
+or an offer to buy or sell any security. Past performance is not indicative of future 
+results. Always consult a licensed financial advisor before making any investment decisions.
+""")
       )
 
     with tab2:
