@@ -377,6 +377,26 @@ SECTOR_LEADERS = [
 
 BENCHMARK = "SPY"
 
+FACTORS = [
+    ("IVW",  "Growth"),
+    ("IVE",  "Value"),
+    ("DVY",  "High Dividend"),
+    ("OEF",  "Large-Cap"),
+    ("IJH",  "Mid-Cap"),
+    ("IJR",  "Small-Cap"),
+    ("MTUM", "Momentum"),
+    ("IPO",  "IPOs"),
+]
+
+SNAPSHOT_CARDS = [
+    ("RSP",     "RSP",  "S&P 500 Eq Wt",    "index"),
+    ("QQQE",    "QQQE", "NASDAQ 100 Eq Wt", "index"),
+    ("IWM",     "IWM",  "Russell 2000",      "index"),
+    ("DIA",     "DIA",  "Dow Jones",         "index"),
+    ("^VIX",    "VIX",  "Volatility",        "vix"),
+    ("BTC-USD", "BTC",  "Bitcoin",           "crypto"),
+]
+
 # (yahoo_ticker, display_label, card_name, kind)
 MARKET_CARDS = [
     ("SPY",     "SPY",  "S&P 500",       "index"),
@@ -426,6 +446,179 @@ def fetch_market_cards():
         except Exception:
             continue
     return out
+
+@st.cache_data(ttl=300)
+def fetch_dashboard_data(all_etf_tickers):
+    end   = datetime.today()
+    start = end - timedelta(days=400)  # extra buffer for 3M lookback
+    syms  = list(set(list(all_etf_tickers) + [BENCHMARK] +
+                     [f[0] for f in FACTORS] + [s[0] for s in SNAPSHOT_CARDS]))
+    try:
+        raw    = yf.download(syms, start=start, end=end, auto_adjust=True, progress=False, threads=True)
+        prices = raw["Close"] if isinstance(raw.columns, pd.MultiIndex) else raw
+        prices = prices.dropna(how="all")
+    except Exception:
+        return {}
+
+    spy = prices[BENCHMARK].dropna() if BENCHMARK in prices.columns else pd.Series(dtype=float)
+    if spy.empty:
+        return {}
+
+    # ── Market Conditions: % positive signals lb trading days AGO ──
+    def positive_pct(lb):
+        """
+        lb=0  → current state (today)
+        lb=1  → state as of yesterday
+        lb=5  → state as of 1 week ago
+        lb=21 → state as of 1 month ago
+        lb=63 → state as of 3 months ago
+        """
+        count, total = 0, 0
+        for tkr in all_etf_tickers:
+            if tkr not in prices.columns:
+                continue
+            c   = prices[tkr].dropna()
+            idx = c.index.intersection(spy.index)
+            # Need enough history: lb days back + 52 days for SMA/perf signals
+            if len(idx) < lb + 55:
+                continue
+            c2, s2 = c.loc[idx], spy.loc[idx]
+            ratio  = c2 / s2
+
+            # Slice to "as of lb days ago" — exclude the last lb rows
+            if lb > 0:
+                c_ref     = c2.iloc[:-lb]
+                ratio_ref = ratio.iloc[:-lb]
+            else:
+                c_ref     = c2
+                ratio_ref = ratio
+
+            if len(ratio_ref) < 10:
+                continue
+
+            sigs = []
+            # SMA signals on ratio
+            for w in [10, 20, 50]:
+                if len(ratio_ref) >= w:
+                    sigs.append(
+                        float(ratio_ref.iloc[-1]) > float(ratio_ref.rolling(w).mean().iloc[-1])
+                    )
+            # 1-month price momentum
+            if len(c_ref) >= 22:
+                sigs.append(float(c_ref.iloc[-1]) > float(c_ref.iloc[-22]))
+            # Near 52-week high
+            if len(c_ref) >= 252:
+                sigs.append(
+                    float(c_ref.iloc[-1]) >= float(c_ref.rolling(252).max().iloc[-1]) * 0.95
+                )
+
+            if not sigs:
+                continue
+            count += sum(sigs)
+            total += len(sigs)
+
+        return round(count / total * 100, 1) if total else 50.0
+
+    conditions = {
+        "score":  positive_pct(0),   # today
+        "1d_ago": positive_pct(1),   # yesterday
+        "1w_ago": positive_pct(5),   # 1 week ago
+        "1m_ago": positive_pct(21),  # 1 month ago
+        "3m_ago": positive_pct(63),  # 3 months ago
+    }
+
+    # ── Breadth & Trend Metrics (current) ──
+    etf_cls = [
+        prices[t].dropna()
+        for t in all_etf_tickers
+        if t in prices.columns and len(prices[t].dropna()) >= 200
+    ]
+
+    def pct_above(w):
+        if not etf_cls: return 0.0
+        return round(
+            sum(1 for c in etf_cls
+                if float(c.iloc[-1]) > float(c.rolling(w).mean().iloc[-1]))
+            / len(etf_cls) * 100, 2
+        )
+
+    def pct_cross(f, s):
+        if not etf_cls: return 0.0
+        return round(
+            sum(1 for c in etf_cls
+                if len(c) >= s and
+                float(c.rolling(f).mean().iloc[-1]) > float(c.rolling(s).mean().iloc[-1]))
+            / len(etf_cls) * 100, 2
+        )
+
+    breadth = {
+        "sma10":        pct_above(10),
+        "sma20":        pct_above(20),
+        "sma50":        pct_above(50),
+        "sma200":       pct_above(200),
+        "cross_20_50":  pct_cross(20, 50),
+        "cross_50_200": pct_cross(50, 200),
+    }
+
+    # ── Performance Overview (SPY) ──
+    ytd_start = datetime(datetime.today().year, 1, 1)
+    spy_ytd   = spy[spy.index >= pd.Timestamp(ytd_start)]
+    ytd_pct   = round(float((spy.iloc[-1] / spy_ytd.iloc[0] - 1) * 100), 2) if len(spy_ytd) > 1 else None
+
+    def spy_chg(lb):
+        return round(float((spy.iloc[-1] / spy.iloc[-1 - lb] - 1) * 100), 2) if len(spy) > lb else None
+
+    h52     = float(spy.rolling(252).max().iloc[-1]) if len(spy) >= 252 else float(spy.max())
+    vix_val = None
+    if "^VIX" in prices.columns:
+        vc = prices["^VIX"].dropna()
+        if not vc.empty:
+            vix_val = round(float(vc.iloc[-1]), 2)
+
+    performance = {
+        "ytd":      ytd_pct,
+        "1w":       spy_chg(5),
+        "1m":       spy_chg(21),
+        "1y":       spy_chg(252),
+        "s2w_high": round((float(spy.iloc[-1]) / h52 - 1) * 100, 2),
+        "vix":      vix_val,
+    }
+
+    # ── Market Snapshot ──
+    snapshot = {}
+    for yahoo_tkr, display, name, kind in SNAPSHOT_CARDS:
+        if yahoo_tkr not in prices.columns:
+            continue
+        c = prices[yahoo_tkr].dropna()
+        if len(c) < 2:
+            continue
+        price   = float(c.iloc[-1])
+        day_pct = float((c.iloc[-1] / c.iloc[-2] - 1) * 100)
+        ema21   = float(c.ewm(span=21, adjust=False).mean().iloc[-1])
+        snapshot[display] = {
+            "name": name, "kind": kind, "price": price,
+            "day_pct": day_pct, "above_ema21": price > ema21,
+        }
+
+    # ── Factors vs SP500 (relative 1-day performance) ──
+    spy_1d = float((spy.iloc[-1] / spy.iloc[-2] - 1) * 100) if len(spy) >= 2 else 0
+    factors = {}
+    for tkr, label in FACTORS:
+        if tkr not in prices.columns:
+            continue
+        c = prices[tkr].dropna()
+        if len(c) < 2:
+            continue
+        factors[label] = round(float((c.iloc[-1] / c.iloc[-2] - 1) * 100) - spy_1d, 2)
+
+    return {
+        "conditions":  conditions,
+        "breadth":     breadth,
+        "performance": performance,
+        "snapshot":    snapshot,
+        "factors":     factors,
+    }
+
 
 @st.cache_data(ttl=300)
 def fetch_scatter_data(tickers):
@@ -543,6 +736,201 @@ def pill_html(val, label):
 
 def tv(sym):
     return f"https://www.tradingview.com/chart/?symbol={sym}"
+
+# ═══════════════════════════════════════
+# RENDER: MARKET DASHBOARD
+# ═══════════════════════════════════════
+def _tag(val, pos_t, neg_t, invert=False):
+    good = val >= pos_t if not invert else val <= pos_t
+    bad  = val <  neg_t if not invert else val >  neg_t
+    if good:  return "Positive", "#4ade80", "rgba(34,197,94,0.15)"
+    if bad:   return "Negative", "#f87171", "rgba(239,68,68,0.15)"
+    return "Neutral", "#fbbf24", "rgba(250,204,21,0.12)"
+
+def _sig_html(label, val, tag, color, bg):
+    return (
+        f'<div style="background:#1a2236;border:1px solid #263347;border-radius:8px;'
+        f'padding:10px 14px;margin-bottom:8px;display:flex;justify-content:space-between;align-items:center">'
+        f'<div><div style="font-size:10px;color:#64748b">{label}</div>'
+        f'<div style="font-family:Syne,sans-serif;font-size:16px;font-weight:700;color:{color}">{val:.1f}</div></div>'
+        f'<span style="font-size:9px;padding:2px 8px;border-radius:10px;font-weight:600;'
+        f'background:{bg};color:{color}">{tag}</span></div>'
+    )
+
+def _cell_html(label, val_str, tag, color, bg):
+    return (
+        f'<div style="background:#1a2236;border:1px solid #263347;border-radius:8px;'
+        f'padding:10px 8px;text-align:center">'
+        f'<div style="font-size:9px;color:#64748b;letter-spacing:1px;text-transform:uppercase;margin-bottom:4px">{label}</div>'
+        f'<div style="font-family:Syne,sans-serif;font-size:15px;font-weight:700;color:{color}">{val_str}</div>'
+        f'<div style="margin-top:5px"><span style="font-size:9px;padding:2px 8px;border-radius:10px;'
+        f'font-weight:600;background:{bg};color:{color}">{tag}</span></div></div>'
+    )
+
+def render_market_dashboard(dash, now_str):
+    if not dash:
+        st.warning("Market Dashboard data unavailable.")
+        return
+
+    cond  = dash.get("conditions", {})
+    bread = dash.get("breadth", {})
+    perf  = dash.get("performance", {})
+    snap  = dash.get("snapshot", {})
+    facts = dash.get("factors", {})
+
+    score = cond.get("score", 50)
+    if score >= 60:   g_col, g_bg, g_lbl = "#4ade80", "rgba(34,197,94,0.18)",  "Bullish"
+    elif score >= 40: g_col, g_bg, g_lbl = "#fbbf24", "rgba(250,204,21,0.15)", "Neutral"
+    else:             g_col, g_bg, g_lbl = "#f87171", "rgba(239,68,68,0.18)",  "Bearish"
+
+    st.markdown(
+        f'<div style="display:flex;justify-content:space-between;align-items:center;margin:8px 0 16px">'
+        f'<div style="font-family:Syne,sans-serif;font-size:20px;font-weight:800;color:#f1f5f9">📊 Market Dashboard</div>'
+        f'<div style="font-size:10px;color:#334155">Updated: {now_str}</div></div>',
+        unsafe_allow_html=True
+    )
+
+    col_left, col_right = st.columns([1, 2], gap="medium")
+
+    with col_left:
+        n_etfs = len({t[0] for t in INDUSTRY_LEADERS} | {t[0] for t in SECTOR_LEADERS})
+        st.markdown(
+            f'<div style="font-size:10px;color:#64748b;font-weight:700;letter-spacing:1px;text-transform:uppercase;margin-bottom:8px">Market Conditions</div>'
+            f'<div style="font-size:10px;color:#64748b;line-height:1.6;margin-bottom:14px">'
+            f'% positive signals across {n_etfs} ETFs based on Breadth, Trend, Performance, 52W highs &amp; VIX.</div>',
+            unsafe_allow_html=True
+        )
+        st.markdown(
+            f'<div style="text-align:center;margin-bottom:16px">'
+            f'<div style="display:inline-block;padding:8px 28px;border-radius:8px;'
+            f'background:{g_bg};color:{g_col};font-family:Syne,sans-serif;font-size:20px;font-weight:800">'
+            f'{g_lbl} &nbsp; {int(score)}</div></div>',
+            unsafe_allow_html=True
+        )
+        for lbl, key in [("1D ago","1d_ago"),("1W ago","1w_ago"),("1M ago","1m_ago"),("3M ago","3m_ago")]:
+            v = cond.get(key, 50)
+            tag, color, bg = _tag(v, 60, 40)
+            st.markdown(_sig_html(lbl, v, tag, color, bg), unsafe_allow_html=True)
+
+    with col_right:
+        st.markdown(
+            '<div style="font-size:10px;color:#64748b;font-weight:700;letter-spacing:1px;text-transform:uppercase;margin-bottom:10px">'
+            'Breadth &amp; Trend Metrics</div>',
+            unsafe_allow_html=True
+        )
+        bc1,bc2,bc3,bc4,bc5,bc6 = st.columns(6)
+        for col, lbl, key, pt, nt in [
+            (bc1,"SMA 10",  "sma10",        40, 30),
+            (bc2,"SMA 20",  "sma20",        50, 35),
+            (bc3,"SMA 50",  "sma50",        50, 35),
+            (bc4,"SMA 200", "sma200",       60, 40),
+            (bc5,"20>50",   "cross_20_50",  55, 40),
+            (bc6,"50>200",  "cross_50_200", 60, 40),
+        ]:
+            val = bread.get(key, 0)
+            tag, color, bg = _tag(val, pt, nt)
+            col.markdown(_cell_html(lbl, f"{val:.1f}%", tag, color, bg), unsafe_allow_html=True)
+
+        st.markdown(
+            '<div style="font-size:10px;color:#64748b;font-weight:700;letter-spacing:1px;text-transform:uppercase;margin:16px 0 10px">'
+            'Performance Overview (SPY)</div>',
+            unsafe_allow_html=True
+        )
+        pc1,pc2,pc3,pc4,pc5,pc6 = st.columns(6)
+
+        def perf_cell(col, lbl, val, pt, nt, invert=False):
+            if val is None:
+                col.markdown(_cell_html(lbl, "–", "–", "#64748b", "rgba(100,116,139,0.1)"), unsafe_allow_html=True)
+                return
+            tag, color, bg = _tag(val, pt, nt, invert=invert)
+            col.markdown(_cell_html(lbl, ("+" if val > 0 else "") + f"{val:.2f}%", tag, color, bg), unsafe_allow_html=True)
+
+        perf_cell(pc1, "% YTD",    perf.get("ytd"),      2,   -2)
+        perf_cell(pc2, "% 1W",     perf.get("1w"),       0.5, -0.5)
+        perf_cell(pc3, "% 1M",     perf.get("1m"),       1,   -1)
+        perf_cell(pc4, "% 1Y",     perf.get("1y"),       10,  0)
+        perf_cell(pc5, "52W HIGH", perf.get("s2w_high"), -2,  -15, invert=True)
+
+        vix = perf.get("vix")
+        if vix is None:
+            pc6.markdown(_cell_html("VIX", "–", "–", "#64748b", "rgba(100,116,139,0.1)"), unsafe_allow_html=True)
+        else:
+            if   vix < 15: vt,vc,vb = "Low",      "#4ade80", "rgba(34,197,94,0.15)"
+            elif vix < 20: vt,vc,vb = "Normal",   "#94a3b8", "rgba(100,116,139,0.12)"
+            elif vix < 30: vt,vc,vb = "Elevated", "#fbbf24", "rgba(250,204,21,0.12)"
+            else:          vt,vc,vb = "High",     "#f87171", "rgba(239,68,68,0.15)"
+            pc6.markdown(_cell_html("VIX", f"{vix:.2f}", vt, vc, vb), unsafe_allow_html=True)
+
+    st.markdown("<div style='margin-top:8px'></div>", unsafe_allow_html=True)
+
+    snap_col, fac_col = st.columns([2, 1], gap="medium")
+
+    with snap_col:
+        st.markdown(
+            '<div style="font-size:10px;color:#64748b;font-weight:700;letter-spacing:1px;text-transform:uppercase;margin-bottom:10px">'
+            'Market Snapshot</div>',
+            unsafe_allow_html=True
+        )
+        r1c1,r1c2,r1c3 = st.columns(3)
+        r2c1,r2c2,r2c3 = st.columns(3)
+        snap_cols = [r1c1,r1c2,r1c3,r2c1,r2c2,r2c3]
+
+        for i, (yahoo_tkr, display, name, kind) in enumerate(SNAPSHOT_CARDS):
+            d   = snap.get(display, {})
+            col = snap_cols[i]
+            if not d:
+                col.markdown(
+                    f'<div style="background:#1a2236;border:1px solid #263347;border-radius:10px;padding:14px 16px;min-height:90px">'
+                    f'<div style="color:#64748b">{display}</div></div>',
+                    unsafe_allow_html=True
+                )
+                continue
+            price    = d["price"]
+            day_pct  = d["day_pct"]
+            above    = d.get("above_ema21", True)
+            is_crypto= kind == "crypto"
+            is_vix   = kind == "vix"
+            price_str= f"${price:,.0f}" if is_crypto else f"${price:,.2f}"
+            chg_col  = "#4ade80" if day_pct >= 0 else "#f87171"
+            pfx      = "+" if day_pct >= 0 else ""
+            ema_col  = "#4ade80" if above else "#f87171"
+            ema_lbl  = ("▲" if above else "▼") + " 21EMA " + ("High" if is_vix and above else ("Above" if above else "Low"))
+            col.markdown(
+                f'<div style="background:#1a2236;border:1px solid #263347;border-radius:10px;padding:14px 16px">'
+                f'<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:4px">'
+                f'<div style="font-size:10px;color:#64748b">{name}</div>'
+                f'<span style="font-size:9px;padding:2px 6px;border-radius:5px;font-weight:600;'
+                f'background:rgba({"34,197,94" if above else "239,68,68"},0.15);color:{ema_col}">{ema_lbl}</span></div>'
+                f'<div style="font-size:12px;font-weight:700;color:#94b8d8;margin-bottom:2px">{display}</div>'
+                f'<div><span style="font-family:Syne,sans-serif;font-size:18px;font-weight:700;color:#f1f5f9">{price_str}</span>'
+                f'<span style="font-size:12px;font-weight:600;color:{chg_col};margin-left:6px">{pfx}{day_pct:.2f}%</span></div>'
+                f'</div>',
+                unsafe_allow_html=True
+            )
+
+    with fac_col:
+        st.markdown(
+            '<div style="font-size:10px;color:#64748b;font-weight:700;letter-spacing:1px;text-transform:uppercase;margin-bottom:10px">'
+            'Factors vs SP500</div>',
+            unsafe_allow_html=True
+        )
+        max_abs = max((abs(v) for v in facts.values()), default=1) or 1
+        for label, rel in facts.items():
+            color    = "#4ade80" if rel >= 0 else "#f87171"
+            pfx      = "+" if rel >= 0 else ""
+            bar_w    = min(50, abs(rel) / max_abs * 50)
+            bar_side = "left:50%" if rel >= 0 else "right:50%"
+            st.markdown(
+                f'<div style="display:flex;align-items:center;padding:6px 0;border-bottom:1px solid #1f2d42">'
+                f'<div style="font-size:12px;color:#94a3b8;width:120px">{label}</div>'
+                f'<div style="flex:1;height:7px;background:#1f2d42;border-radius:4px;margin:0 10px;position:relative">'
+                f'<div style="position:absolute;height:7px;border-radius:4px;width:{bar_w:.1f}%;{bar_side};background:{color}"></div></div>'
+                f'<div style="font-size:12px;font-weight:600;color:{color};width:55px;text-align:right">{pfx}{rel:.2f}%</div></div>',
+                unsafe_allow_html=True
+            )
+
+    st.markdown("<hr style='border-color:#1f2d42;margin:20px 0'>", unsafe_allow_html=True)
+
 
 # ═══════════════════════════════════════
 # RENDER: MARKET CARDS
@@ -860,7 +1248,7 @@ def main():
     st.markdown(
         f'<div class="page-header">'
         f'  <div class="page-title">MarketRotation Pro</div>'
-        f'  <div class="page-sub">Sector &amp; Theme Rotation Tracker &middot; Built with Python &amp; Claude AI By Noam73nc</div>'
+        f'  <div class="page-sub">Sector &amp; Theme Rotation Tracker &middot; Built with Python &amp; Claude AI By Noam73_© </div>'
         f'  <div class="page-date">{date_str}</div>'
         f'</div>',
         unsafe_allow_html=True
@@ -943,11 +1331,17 @@ html,body,[data-testid="stAppViewContainer"],[data-testid="stMain"],[data-testid
     for tkr, d in rs_all.items():
         d["name"] = name_map.get(tkr, tkr)
 
+    # ── Market Dashboard ──
+    all_etf_for_dash = tuple({t[0] for t in INDUSTRY_LEADERS} | {t[0] for t in SECTOR_LEADERS})
+    with st.spinner("Loading Market Dashboard..."):
+        dash_data = fetch_dashboard_data(all_etf_for_dash)
+    render_market_dashboard(dash_data, now_str)
+
     # ── TABS ──
     tab1, tab2 = st.tabs(["📊  Tables", "🔵  Scatter — Price vs Volume"])
 
     with tab1:
-      st.markdown('<div class="sec-hdr">Sector Leaders</div>', unsafe_allow_html=True)
+      st.markdown('<div class="sec-hdr">RS Radar — Sector Leaders</div>', unsafe_allow_html=True)
       cl, cr = st.columns([1, 3], gap="medium")
 
       with cl:
@@ -992,7 +1386,7 @@ html,body,[data-testid="stAppViewContainer"],[data-testid="stMain"],[data-testid
         'font-size:11px;color:#94a3b8;line-height:1.7">'
         '⚠️ <b style="color:#f87171">Disclaimer:</b> '
         'MarketRotation Pro is intended for educational and informational purposes only. '
-        'Nothing displayed in this application constitutes financial advice, investment recommendations, '
+        'Nothing displayed constitutes financial advice, investment recommendations, '
         'or an offer to buy or sell any security. Past performance is not indicative of future results. '
         'Always consult a licensed financial advisor before making any investment decisions. Use at your own risk.'
         '</div>',
