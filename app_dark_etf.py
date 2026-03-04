@@ -973,13 +973,16 @@ html,body,[data-testid="stAppViewContainer"],[data-testid="stMain"],[data-testid
       ir.sort(key=lambda x: x[2].get("raw_rs", 0), reverse=True)
       render_table(ir, extra=True, height=650, t=t)
 
-      st.markdown(
-          f'<div style="font-size:9px;color:#1e293b;text-align:right;margin-top:12px">Yahoo Finance · {now_str}</div>',
-          unsafe_allow_html=True  **Disclaimer:** MarketRotation Pro is intended for educational and informational 
+    render_scatter(rs_all, scatter_data, all_tickers)
+
+      st.markdown("""
+---
+ **Disclaimer:** MarketRotation Pro is intended for educational and informational 
 purposes only. Nothing displayed constitutes financial advice, investment recommendations, 
 or an offer to buy or sell any security. Past performance is not indicative of future 
 results. Always consult a licensed financial advisor before making any investment decisions.
 """)
+
       
 
     with tab2:
