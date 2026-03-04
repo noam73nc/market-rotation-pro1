@@ -450,7 +450,7 @@ def fetch_market_cards():
 @st.cache_data(ttl=300)
 def fetch_dashboard_data(all_etf_tickers):
     end   = datetime.today()
-    start = end - timedelta(days=400)  # extra buffer for 3M lookback
+    start = end - timedelta(days=400)
     syms  = list(set(list(all_etf_tickers) + [BENCHMARK] +
                      [f[0] for f in FACTORS] + [s[0] for s in SNAPSHOT_CARDS]))
     try:
@@ -464,103 +464,60 @@ def fetch_dashboard_data(all_etf_tickers):
     if spy.empty:
         return {}
 
-    # ── Market Conditions: % positive signals lb trading days AGO ──
     def positive_pct(lb):
-        """
-        lb=0  → current state (today)
-        lb=1  → state as of yesterday
-        lb=5  → state as of 1 week ago
-        lb=21 → state as of 1 month ago
-        lb=63 → state as of 3 months ago
-        """
         count, total = 0, 0
         for tkr in all_etf_tickers:
             if tkr not in prices.columns:
                 continue
             c   = prices[tkr].dropna()
             idx = c.index.intersection(spy.index)
-            # Need enough history: lb days back + 52 days for SMA/perf signals
             if len(idx) < lb + 55:
                 continue
-            c2, s2 = c.loc[idx], spy.loc[idx]
-            ratio  = c2 / s2
-
-            # Slice to "as of lb days ago" — exclude the last lb rows
-            if lb > 0:
-                c_ref     = c2.iloc[:-lb]
-                ratio_ref = ratio.iloc[:-lb]
-            else:
-                c_ref     = c2
-                ratio_ref = ratio
-
+            c2, s2    = c.loc[idx], spy.loc[idx]
+            ratio     = c2 / s2
+            c_ref     = c2.iloc[:-lb]    if lb > 0 else c2
+            ratio_ref = ratio.iloc[:-lb] if lb > 0 else ratio
             if len(ratio_ref) < 10:
                 continue
-
             sigs = []
-            # SMA signals on ratio
             for w in [10, 20, 50]:
                 if len(ratio_ref) >= w:
-                    sigs.append(
-                        float(ratio_ref.iloc[-1]) > float(ratio_ref.rolling(w).mean().iloc[-1])
-                    )
-            # 1-month price momentum
+                    sigs.append(float(ratio_ref.iloc[-1]) > float(ratio_ref.rolling(w).mean().iloc[-1]))
             if len(c_ref) >= 22:
                 sigs.append(float(c_ref.iloc[-1]) > float(c_ref.iloc[-22]))
-            # Near 52-week high
             if len(c_ref) >= 252:
-                sigs.append(
-                    float(c_ref.iloc[-1]) >= float(c_ref.rolling(252).max().iloc[-1]) * 0.95
-                )
-
+                sigs.append(float(c_ref.iloc[-1]) >= float(c_ref.rolling(252).max().iloc[-1]) * 0.95)
             if not sigs:
                 continue
             count += sum(sigs)
             total += len(sigs)
-
         return round(count / total * 100, 1) if total else 50.0
 
     conditions = {
-        "score":  positive_pct(0),   # today
-        "1d_ago": positive_pct(1),   # yesterday
-        "1w_ago": positive_pct(5),   # 1 week ago
-        "1m_ago": positive_pct(21),  # 1 month ago
-        "3m_ago": positive_pct(63),  # 3 months ago
+        "score":  positive_pct(0),
+        "1d_ago": positive_pct(1),
+        "1w_ago": positive_pct(5),
+        "1m_ago": positive_pct(21),
+        "3m_ago": positive_pct(63),
     }
 
-    # ── Breadth & Trend Metrics (current) ──
-    etf_cls = [
-        prices[t].dropna()
-        for t in all_etf_tickers
-        if t in prices.columns and len(prices[t].dropna()) >= 200
-    ]
+    etf_cls = [prices[t].dropna() for t in all_etf_tickers
+               if t in prices.columns and len(prices[t].dropna()) >= 200]
 
     def pct_above(w):
         if not etf_cls: return 0.0
-        return round(
-            sum(1 for c in etf_cls
-                if float(c.iloc[-1]) > float(c.rolling(w).mean().iloc[-1]))
-            / len(etf_cls) * 100, 2
-        )
+        return round(sum(1 for c in etf_cls if float(c.iloc[-1]) > float(c.rolling(w).mean().iloc[-1])) / len(etf_cls) * 100, 2)
 
     def pct_cross(f, s):
         if not etf_cls: return 0.0
-        return round(
-            sum(1 for c in etf_cls
-                if len(c) >= s and
-                float(c.rolling(f).mean().iloc[-1]) > float(c.rolling(s).mean().iloc[-1]))
-            / len(etf_cls) * 100, 2
-        )
+        return round(sum(1 for c in etf_cls if len(c) >= s and float(c.rolling(f).mean().iloc[-1]) > float(c.rolling(s).mean().iloc[-1])) / len(etf_cls) * 100, 2)
 
     breadth = {
-        "sma10":        pct_above(10),
-        "sma20":        pct_above(20),
-        "sma50":        pct_above(50),
-        "sma200":       pct_above(200),
-        "cross_20_50":  pct_cross(20, 50),
-        "cross_50_200": pct_cross(50, 200),
+        "sma10": pct_above(10), "sma20": pct_above(20),
+        "sma50": pct_above(50), "sma200": pct_above(200),
+        "cross_20_50": pct_cross(20, 50), "cross_50_200": pct_cross(50, 200),
     }
 
-    # ── Performance Overview (SPY) ──
     ytd_start = datetime(datetime.today().year, 1, 1)
     spy_ytd   = spy[spy.index >= pd.Timestamp(ytd_start)]
     ytd_pct   = round(float((spy.iloc[-1] / spy_ytd.iloc[0] - 1) * 100), 2) if len(spy_ytd) > 1 else None
@@ -576,15 +533,11 @@ def fetch_dashboard_data(all_etf_tickers):
             vix_val = round(float(vc.iloc[-1]), 2)
 
     performance = {
-        "ytd":      ytd_pct,
-        "1w":       spy_chg(5),
-        "1m":       spy_chg(21),
-        "1y":       spy_chg(252),
-        "s2w_high": round((float(spy.iloc[-1]) / h52 - 1) * 100, 2),
-        "vix":      vix_val,
+        "ytd": ytd_pct, "1w": spy_chg(5), "1m": spy_chg(21),
+        "1y": spy_chg(252), "s2w_high": round((float(spy.iloc[-1]) / h52 - 1) * 100, 2),
+        "vix": vix_val,
     }
 
-    # ── Market Snapshot ──
     snapshot = {}
     for yahoo_tkr, display, name, kind in SNAPSHOT_CARDS:
         if yahoo_tkr not in prices.columns:
@@ -595,12 +548,9 @@ def fetch_dashboard_data(all_etf_tickers):
         price   = float(c.iloc[-1])
         day_pct = float((c.iloc[-1] / c.iloc[-2] - 1) * 100)
         ema21   = float(c.ewm(span=21, adjust=False).mean().iloc[-1])
-        snapshot[display] = {
-            "name": name, "kind": kind, "price": price,
-            "day_pct": day_pct, "above_ema21": price > ema21,
-        }
+        snapshot[display] = {"name": name, "kind": kind, "price": price,
+                              "day_pct": day_pct, "above_ema21": price > ema21}
 
-    # ── Factors vs SP500 (relative 1-day performance) ──
     spy_1d = float((spy.iloc[-1] / spy.iloc[-2] - 1) * 100) if len(spy) >= 2 else 0
     factors = {}
     for tkr, label in FACTORS:
@@ -611,13 +561,8 @@ def fetch_dashboard_data(all_etf_tickers):
             continue
         factors[label] = round(float((c.iloc[-1] / c.iloc[-2] - 1) * 100) - spy_1d, 2)
 
-    return {
-        "conditions":  conditions,
-        "breadth":     breadth,
-        "performance": performance,
-        "snapshot":    snapshot,
-        "factors":     factors,
-    }
+    return {"conditions": conditions, "breadth": breadth, "performance": performance,
+            "snapshot": snapshot, "factors": factors}
 
 
 @st.cache_data(ttl=300)
@@ -747,6 +692,11 @@ def _tag(val, pos_t, neg_t, invert=False):
     if bad:   return "Negative", "#f87171", "rgba(239,68,68,0.15)"
     return "Neutral", "#fbbf24", "rgba(250,204,21,0.12)"
 
+def _sig_tag(val):
+    if val >= 60: return "Positive", "#4ade80", "rgba(34,197,94,0.15)"
+    if val >= 50: return "Neutral",  "#fbbf24", "rgba(250,204,21,0.12)"
+    return "Bearish", "#f87171", "rgba(239,68,68,0.15)"
+
 def _sig_html(label, val, tag, color, bg):
     return (
         f'<div style="background:#1a2236;border:1px solid #263347;border-radius:8px;'
@@ -780,12 +730,12 @@ def render_market_dashboard(dash, now_str):
 
     score = cond.get("score", 50)
     if score >= 60:   g_col, g_bg, g_lbl = "#4ade80", "rgba(34,197,94,0.18)",  "Bullish"
-    elif score >= 40: g_col, g_bg, g_lbl = "#fbbf24", "rgba(250,204,21,0.15)", "Neutral"
+    elif score >= 50: g_col, g_bg, g_lbl = "#fbbf24", "rgba(250,204,21,0.15)", "Neutral"
     else:             g_col, g_bg, g_lbl = "#f87171", "rgba(239,68,68,0.18)",  "Bearish"
 
     st.markdown(
         f'<div style="display:flex;justify-content:space-between;align-items:center;margin:8px 0 16px">'
-        f'<div style="font-family:Syne,sans-serif;font-size:20px;font-weight:800;color:#f1f5f9">📊 Market Dashboard</div>'
+        f'<div style="font-family:Syne,sans-serif;font-size:20px;font-weight:800;color:#f1f5f9">📊 Market Breadth</div>'
         f'<div style="font-size:10px;color:#334155">Updated: {now_str}</div></div>',
         unsafe_allow_html=True
     )
@@ -797,7 +747,7 @@ def render_market_dashboard(dash, now_str):
         st.markdown(
             f'<div style="font-size:10px;color:#64748b;font-weight:700;letter-spacing:1px;text-transform:uppercase;margin-bottom:8px">Market Conditions</div>'
             f'<div style="font-size:10px;color:#64748b;line-height:1.6;margin-bottom:14px">'
-            f'% positive signals across {n_etfs} ETFs based on Breadth, Trend, Performance, 52W highs &amp; VIX.</div>',
+            f'% positive signals across {n_etfs} ETFs · Bullish ≥60% · Bearish &lt;50%</div>',
             unsafe_allow_html=True
         )
         st.markdown(
@@ -809,7 +759,7 @@ def render_market_dashboard(dash, now_str):
         )
         for lbl, key in [("1D ago","1d_ago"),("1W ago","1w_ago"),("1M ago","1m_ago"),("3M ago","3m_ago")]:
             v = cond.get(key, 50)
-            tag, color, bg = _tag(v, 60, 40)
+            tag, color, bg = _sig_tag(v)
             st.markdown(_sig_html(lbl, v, tag, color, bg), unsafe_allow_html=True)
 
     with col_right:
@@ -874,7 +824,6 @@ def render_market_dashboard(dash, now_str):
         r1c1,r1c2,r1c3 = st.columns(3)
         r2c1,r2c2,r2c3 = st.columns(3)
         snap_cols = [r1c1,r1c2,r1c3,r2c1,r2c2,r2c3]
-
         for i, (yahoo_tkr, display, name, kind) in enumerate(SNAPSHOT_CARDS):
             d   = snap.get(display, {})
             col = snap_cols[i]
@@ -1248,7 +1197,7 @@ def main():
     st.markdown(
         f'<div class="page-header">'
         f'  <div class="page-title">MarketRotation Pro</div>'
-        f'  <div class="page-sub">Sector &amp; Theme Rotation Tracker &middot; Built with Python &amp; Claude AI By Noam73_© </div>'
+        f'  <div class="page-sub">Sector &amp; Theme Rotation Tracker &middot; Built with Python &amp; Claude AI &middot; By Noam73 &reg; &copy;</div>'
         f'  <div class="page-date">{date_str}</div>'
         f'</div>',
         unsafe_allow_html=True
@@ -1341,7 +1290,7 @@ html,body,[data-testid="stAppViewContainer"],[data-testid="stMain"],[data-testid
     tab1, tab2 = st.tabs(["📊  Tables", "🔵  Scatter — Price vs Volume"])
 
     with tab1:
-      st.markdown('<div class="sec-hdr">RS Radar — Sector Leaders</div>', unsafe_allow_html=True)
+      st.markdown('<div class="sec-hdr">Sector Leaders</div>', unsafe_allow_html=True)
       cl, cr = st.columns([1, 3], gap="medium")
 
       with cl:
